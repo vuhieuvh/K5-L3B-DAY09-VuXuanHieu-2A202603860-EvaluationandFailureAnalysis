@@ -20,13 +20,14 @@ jobs:
     timeout-minutes: 15
     env:
       PYTHONUTF8: "1"
+      PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       EVAL_SPEC: config/metric_spec.yaml
       # Committed by the student after M4 (re-run on main, never hand-edited).
       EVAL_BASELINE: reports/baseline_v1.json
     defaults: {run: {working-directory: src}}
     steps:
       - uses: actions/checkout@v7
-        with: {persist-credentials: false}
+        with: {persist-credentials: false, fetch-depth: 0}
       # setup-uv publishes only full tags (no @v10); pin the SHA.
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: {python-version: "3.13", activate-environment: true, enable-cache: true, cache-dependency-glob: "src/requirements*.txt"}
@@ -37,8 +38,13 @@ jobs:
       - name: Evaluate and gate the PR swarm
         shell: bash
         run: |
+          base_args=()
+          if [[ -n "$PR_BASE_SHA" ]] && git cat-file -e "$PR_BASE_SHA:src/$EVAL_SPEC"; then
+            git show "$PR_BASE_SHA:src/$EVAL_SPEC" > "$RUNNER_TEMP/lab9-base-spec-v1.yaml"
+            base_args=(--base-spec "$RUNNER_TEMP/lab9-base-spec-v1.yaml")
+          fi
           python -m lab9.eval --shape swarm --spec "$EVAL_SPEC" --out reports/eval_pr.json
-          python -m lab9.gate --pr reports/eval_pr.json --baseline "$EVAL_BASELINE" --spec "$EVAL_SPEC"
+          python -m lab9.gate --pr reports/eval_pr.json --baseline "$EVAL_BASELINE" --spec "$EVAL_SPEC" "${base_args[@]}"
       - name: Check the committed baseline and the M3 metric
         run: python -m lab9.ci_check --pr reports/eval_pr.json --baseline "$EVAL_BASELINE" --spec "$EVAL_SPEC"
       - name: Verify the gate accepts fixed
@@ -65,11 +71,15 @@ jobs:
     needs: eval-gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env: {PYTHONUTF8: "1"}
+    env:
+      PYTHONUTF8: "1"
+      PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      EVAL_SPEC: config/metric_spec_v2.yaml
+      EVAL_BASELINE: reports/baseline_v2.json
     defaults: {run: {working-directory: src}}
     steps:
       - uses: actions/checkout@v7
-        with: {persist-credentials: false}
+        with: {persist-credentials: false, fetch-depth: 0}
       - id: has
         run: "test -f reports/baseline_v2.json && echo v2=1 >> \"$GITHUB_OUTPUT\" || echo skip, no baseline_v2"
       - if: steps.has.outputs.v2
@@ -82,4 +92,16 @@ jobs:
       - if: steps.has.outputs.v2
         run: python -m lab9.evalset --v2
       - if: steps.has.outputs.v2
-        run: python -m lab9.mutation --spec config/metric_spec_v2.yaml --baseline reports/baseline_v2.json
+        name: Verify v2 baseline, mutation score and integrity traps
+        shell: bash
+        run: |
+          base_args=()
+          if [[ -n "$PR_BASE_SHA" ]] && git cat-file -e "$PR_BASE_SHA:src/$EVAL_SPEC"; then
+            git show "$PR_BASE_SHA:src/$EVAL_SPEC" > "$RUNNER_TEMP/lab9-base-spec-v2.yaml"
+            base_args=(--base-spec "$RUNNER_TEMP/lab9-base-spec-v2.yaml")
+          fi
+          python -m lab9.eval --shape swarm --spec "$EVAL_SPEC" --out reports/eval_pr_v2.json
+          python -m lab9.gate --pr reports/eval_pr_v2.json --baseline "$EVAL_BASELINE" --spec "$EVAL_SPEC" "${base_args[@]}"
+          python -m lab9.mutation --spec "$EVAL_SPEC" --baseline "$EVAL_BASELINE" "${base_args[@]}"
+          python -m lab9.eval --shape slice_regression --spec "$EVAL_SPEC" --out reports/eval_slice_regression.json
+          python -m lab9.traps --pr reports/eval_slice_regression.json --baseline "$EVAL_BASELINE" --spec "$EVAL_SPEC"

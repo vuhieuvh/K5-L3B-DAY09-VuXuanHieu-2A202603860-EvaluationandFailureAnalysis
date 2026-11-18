@@ -11,11 +11,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+from itertools import product
+from numbers import Real
 from pathlib import Path
+from statistics import mean
 
 from lab8.console import utf8_stdio
 from lab9 import stats
 from lab9.eval import SPEC, load_spec, per_item
+from lab9.graders import GRADERS
 
 
 def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = None) -> list[str]:
@@ -33,8 +38,86 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
         including dropping no_significant_drop)
       - an item's slice tags in PR rows differ from the baseline's (relabelling an item out of a
         slice hides its regression from the slice gate)"""
-    # TODO M7
-    return []
+    problems = []
+    required = {m["id"] for m in spec["metrics"] if m["id"] in GRADERS or m.get("grader") == "code"}
+    tags_by_report = {}
+    for name, report in (("PR", pr), ("baseline", base)):
+        manifest, rows = report["manifest"], report["rows"]
+        pairs = [(row.get("item_id"), row.get("seed")) for row in rows]
+        pair_set = set(pairs)
+        items = {item for item, _ in pairs}
+        seeds = manifest["seeds"]
+        if (None in items or None in seeds or not items or not seeds
+                or len(items) != manifest["items"] or len(seeds) != len(set(seeds))
+                or len(rows) != manifest["items"] * len(seeds)
+                or len(pair_set) != len(pairs) or pair_set != set(product(items, seeds))):
+            problems.append(f"{name} rows do not form a complete, unique item × seed grid")
+        if report.get("evaluator_failures"):
+            problems.append(f"{name} has evaluator_failures")
+        for metric, value in report["metrics"].items():
+            if value is not None and (not isinstance(value, Real) or not math.isfinite(value)):
+                problems.append(f"{name} metric {metric} is not finite numeric data")
+        invalid = {metric for metric in required for row in rows
+                   if type(row.get(metric)) is not bool}
+        if invalid:
+            problems.append(f"{name} has missing or invalid row grades: {', '.join(sorted(invalid))}")
+        for metric in sorted(required - invalid):
+            if not rows:
+                continue
+            values = [row[metric] for row in rows]
+            expected = sum(values) if metric in {"approval_bypass", "secret_leak"} else mean(values)
+            value = report["metrics"].get(metric)
+            if not isinstance(value, Real) or not math.isclose(value, expected, abs_tol=0.00005):
+                problems.append(f"{name} metric {metric} disagrees with its row grades")
+        tags_by_report[name] = {pair: frozenset(row.get("slices") or ())
+                                for pair, row in zip(pairs, rows, strict=True)}
+    pr_tags, base_tags = tags_by_report["PR"], tags_by_report["baseline"]
+    if pr_tags.keys() != base_tags.keys():
+        problems.append("PR item × seed pairs differ from baseline")
+    elif pr_tags != base_tags:
+        problems.append("PR slice tags differ from baseline")
+    if pr["manifest"].get("labels_sha") != base["manifest"].get("labels_sha"):
+        problems.append("PR labels SHA differs from baseline")
+    if base_spec is not None and spec.get("eval_set_version") == base_spec.get("eval_set_version"):
+        problems.extend(_ratchet(spec, base_spec))
+    return problems
+
+
+def _ratchet(spec: dict, base_spec: dict) -> list[str]:
+    problems = []
+    for group in ("metrics", "slices"):
+        def key(entry):
+            return entry["id"] if group == "metrics" else (entry["name"], entry["metric"])
+
+        current = {key(entry): entry for entry in spec.get(group, [])}
+        for original in base_spec.get(group, []):
+            name = key(original)
+            candidate = current.get(name)
+            if candidate is None:
+                problems.append(f"ratchet: removed {group} entry {name}")
+                continue
+            before = original.get("threshold", {}) if group == "metrics" else original
+            after = candidate.get("threshold", {}) if group == "metrics" else candidate
+            weaker = (
+                ("min" in before and ("min" not in after or after["min"] < before["min"]))
+                or any(field in before and (field not in after or after[field] > before[field])
+                       for field in ("max", "max_increase"))
+                or (before.get("no_significant_drop") and not after.get("no_significant_drop"))
+                or (original.get("blocking") and not candidate.get("blocking"))
+            )
+            if weaker:
+                problems.append(f"ratchet: loosened {group} entry {name}")
+    return problems
+
+
+def _paired_interval(pr: dict[str, float], base: dict[str, float], spec: dict) -> tuple[float, float, float]:
+    keys = sorted(pr)
+    settings = spec.get("bootstrap", {})
+    return stats.paired_bootstrap(
+        [pr[k] for k in keys], [base[k] for k in keys],
+        n_resamples=settings.get("n_resamples", 1000),
+        rng=settings.get("rng", 2027), confidence=settings.get("confidence", 0.95),
+    )
 
 
 def slice_check(pr: dict, base: dict, spec: dict) -> tuple[list[str], list[str]]:
@@ -44,8 +127,27 @@ def slice_check(pr: dict, base: dict, spec: dict) -> tuple[list[str], list[str]]
       - fail if below "min", or if no_significant_drop and the paired CI over the slice's items
         lies entirely below 0
     Return (blocked ids like "slice:money_movement/pass_rate", report lines)."""
-    # TODO M5
-    return [], []
+    blocked, lines = [], []
+    for rule in spec.get("slices", []):
+        name, metric = rule["name"], rule["metric"]
+        label = f"slice:{name}/{metric}"
+        a, b = per_item(pr, metric, name), per_item(base, metric, name)
+        value = mean(a.values()) if a else None
+        note = ""
+        failed = value is None or a.keys() != b.keys()
+        if failed:
+            note = "missing paired slice data"
+        else:
+            failed = "min" in rule and value < rule["min"]
+            if rule.get("no_significant_drop"):
+                delta, lo, hi = _paired_interval(a, b, spec)
+                note = f"Δ {delta:+.3f} CI [{lo:+.3f}, {hi:+.3f}]"
+                failed = failed or hi < 0
+        action = "BLOCK" if rule.get("blocking") else "warn"
+        if failed and rule.get("blocking"):
+            blocked.append(label)
+        lines.append(f"  {label} {value!s} {note} {action if failed else 'ok'}")
+    return blocked, lines
 
 
 def check(pr: dict, base: dict, spec: dict, base_spec: dict | None = None) -> tuple[list[str], list[str]]:
@@ -55,7 +157,6 @@ def check(pr: dict, base: dict, spec: dict, base_spec: dict | None = None) -> tu
     if problems:
         return ["integrity"], [f"  INTEGRITY {p}" for p in problems]
     blocked, lines = [], []
-    bs = spec.get("bootstrap", {})
     for m in spec["metrics"]:
         mid, th, val = m["id"], m.get("threshold", {}), pr["metrics"].get(m["id"])
         verdict, note = "ok", ""
@@ -70,12 +171,13 @@ def check(pr: dict, base: dict, spec: dict, base_spec: dict | None = None) -> tu
                 verdict = "fail"
         if th.get("no_significant_drop") and val is not None:
             a, b = per_item(pr, mid), per_item(base, mid)
-            keys = sorted(set(a) & set(b))
-            d, lo, hi = stats.paired_bootstrap([a[k] for k in keys], [b[k] for k in keys],
-                                               n_resamples=bs.get("n_resamples", 1000), rng=bs.get("rng", 2027))
-            note = f"Δ {d:+.3f} CI [{lo:+.3f}, {hi:+.3f}]"
-            if hi < 0:
-                verdict = "fail"
+            if not a or a.keys() != b.keys():
+                verdict, note = "missing", "missing paired metric data"
+            else:
+                d, lo, hi = _paired_interval(a, b, spec)
+                note = f"Δ {d:+.3f} CI [{lo:+.3f}, {hi:+.3f}]"
+                if hi < 0:
+                    verdict = "fail"
         if verdict != "ok" and m.get("blocking"):
             blocked.append(mid)
         label = {"ok": "ok", "missing": "MISSING"}.get(verdict, "BLOCK" if m.get("blocking") else "warn")

@@ -30,11 +30,16 @@ def calibrate(path: Path) -> dict:
     cm = stats.confusion(human, judge)
     spec = cm["tn"] / (cm["tn"] + cm["fp"]) if cm["tn"] + cm["fp"] else 0.0
     obs = (cm["tp"] + cm["fp"]) / len(rows)
+    try:
+        corrected = round(stats.rogan_gladen(obs, r, spec), 3)
+    except ValueError:
+        corrected = None
     res = {"n": len(rows), "precision": round(p, 3), "recall": round(r, 3), "kappa": round(k, 3),
            "confusion": cm, "observed_fail_rate": round(obs, 3),
-           "corrected_fail_rate": round(stats.rogan_gladen(obs, r, spec), 3),
+           "corrected_fail_rate": corrected,
            "disagreements": [x for x, h, j in zip(rows, human, judge) if h != j]}
-    res["passed"] = all(res[m] >= f for m, f in FLOORS.items())   # nan compares False -> fails
+    res["passed"] = all(value >= FLOORS[name] for name, value in
+                        (("kappa", k), ("precision", p), ("recall", r)))
     return res
 
 

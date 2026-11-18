@@ -57,3 +57,13 @@ def test_check_rejects_missing_tags(tmp_path, evalset_cli):
     result = evalset_cli("--check")
     assert result.returncode == 1, result.stdout + result.stderr
     assert "failure_modes empty" in result.stdout
+
+
+def test_report_fingerprint_matches_linux_and_windows_checkouts(tmp_path):
+    from lab9.evalset import sha12
+
+    path = tmp_path / "eval_set.jsonl"
+    path.write_bytes(b'{"item_id":"E-001"}\r\n')
+    windows_sha = sha12(path)
+    path.write_bytes(b'{"item_id":"E-001"}\n')
+    assert sha12(path) == windows_sha
