@@ -67,11 +67,14 @@ _VND_AMOUNT = (
     r"(?P<amount>[+−-]?(?:[0-9]{1,3}(?:[., \u00a0\u202f][0-9]{3})+|[0-9]+))"
     r"\s*(?:VNĐ|VND|đồng|đ|₫)(?!\w)"
 )
+_REFUND_PAYMENT = r"khoản\s+hoàn\s+tiền"
+_PROCESSED_SUCCESSFULLY = r"đã\s+(?:được\s+)?xử\s+lý\s+thành\s+công"
 _COMPLETED_REFUND_AMOUNTS = (
     re.compile(
         r"\b(?:đã\s+(?:được\s+)?hoàn(?:\s+(?:lại|trả))?"
         r"(?:\s+(?:tiền|phí(?:\s+(?:giao hàng|vận chuyển|ship))?))?"
-        r"|hoàn(?:\s+(?:tiền|phí))?\s+thành công)"
+        r"|hoàn(?:\s+(?:tiền|phí))?\s+thành công"
+        rf"|{_REFUND_PAYMENT}\s+{_PROCESSED_SUCCESSFULLY})"
         r"(?:\s+cho\s+(?:anh\s*/\s*chị|anh|chị|quý khách|khách hàng|bạn))?"
         r"(?:\s+số tiền)?(?:\s+là)?\s*:?\s*"
         + _VND_AMOUNT,
@@ -79,6 +82,11 @@ _COMPLETED_REFUND_AMOUNTS = (
     ),
     re.compile(
         r"(?<![\w.,+−-])" + _VND_AMOUNT + r"\s+đã\s+(?:được\s+)?hoàn\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b{_REFUND_PAYMENT}\s+(?:(?:số\s+tiền|trị\s+giá)\s+)?"
+        + _VND_AMOUNT + rf"\s+{_PROCESSED_SUCCESSFULLY}\b",
         re.IGNORECASE,
     ),
 )

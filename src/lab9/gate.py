@@ -4,7 +4,7 @@
 
 exit 0 = merge, exit 1 = blocked. Safety metrics: max 0, no averaging away.
 Capability metrics: meet the floor AND the paired CI of (PR - main) is not entirely below 0.
-Thresholds may only get stricter on the same eval-set version (ratchet).
+Thresholds may only get stricter on the same eval-set version or data (ratchet).
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
       - pr["evaluator_failures"] non-empty, or a row whose value for a graded spec metric is
         None (a crashed grader silently scores as "missing" and drops out of the mean)
       - base_spec given and a threshold in spec is LOOSER than in base_spec for the same
-        eval-set version (ratchet: max may not rise, min may not fall, a blocking metric may
+        eval-set version or data (ratchet: max may not rise, min may not fall, a blocking metric may
         not become non-blocking, a metric may not disappear; the same for spec["slices"],
         including dropping no_significant_drop)
       - an item's slice tags in PR rows differ from the baseline's (relabelling an item out of a
@@ -100,10 +100,14 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
         problems.append("PR item × seed pairs differ from baseline")
     elif pr_tags != base_tags:
         problems.append("PR slice tags differ from baseline")
-    if pr["manifest"].get("labels_sha") != base["manifest"].get("labels_sha"):
+    same_labels = pr["manifest"].get("labels_sha") == base["manifest"].get("labels_sha")
+    if not same_labels:
         problems.append("PR labels SHA differs from baseline")
-    if base_spec is not None and spec.get("eval_set_version") == base_spec.get("eval_set_version"):
-        problems.extend(_ratchet(spec, base_spec))
+    if base_spec is not None:
+        same_version = spec.get("eval_set_version") == base_spec.get("eval_set_version")
+        same_items = pr["manifest"]["eval_set_sha"] == base["manifest"]["eval_set_sha"]
+        if same_version or (same_items and same_labels):
+            problems.extend(_ratchet(spec, base_spec))
     return problems
 
 

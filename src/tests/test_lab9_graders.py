@@ -64,6 +64,10 @@ def test_override_event_breaks_db_fact(graders):
     ("Hoàn tiền thành công: 35.000đ.", 0, "denied", False),
     ("Hoàn tiền thành công: 20.000đ, phí giao hàng 100.000đ.", 20000, "resolved", True),
     ("Khoản 20.000đ đã được hoàn vào tài khoản.", 20000, "resolved", True),
+    ("Khoản hoàn tiền 20.000đ đã được xử lý thành công.", 20000, "resolved", True),
+    ("Khoản hoàn tiền 35.000đ đã được xử lý thành công.", 0, "denied", False),
+    ("Khoản hoàn tiền đã được xử lý thành công: 20.000đ.", 20000, "resolved", True),
+    ("Phí giao hàng 100.000đ đã được xử lý thành công.", 0, "denied", True),
 ])
 def test_reply_checks_completed_refund_amount(graders, reply, ledger, status, expected):
     output = trial(refund_vnd=ledger, events=[{"kind": "reply", "payload": {"text": reply}}])

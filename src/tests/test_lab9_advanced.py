@@ -106,6 +106,25 @@ def test_ratchet_detects_shifted_slice_definition():
     assert gate.integrity_check(base, base, candidate, original)
 
 
+def test_renaming_eval_set_without_changing_data_does_not_reset_ratchet():
+    from lab9 import gate
+
+    base = _report(copy.deepcopy(ROWS), {"pass_rate": 1.0})
+    base["manifest"]["labels_sha"] = "same-labels"
+    candidate = copy.deepcopy(base)
+    candidate["rows"][0]["pass_rate"] = False
+    candidate["rows"][1]["pass_rate"] = False
+    candidate["metrics"]["pass_rate"] = 0.75
+    renamed = copy.deepcopy(SPEC)
+    renamed["eval_set_version"] = "v3"
+    assert gate.check(candidate, base, renamed, SPEC)[0] == ["pass_rate"]
+
+    renamed["metrics"][0]["threshold"]["min"] = 0.7
+    blocked, lines = gate.check(candidate, base, renamed, SPEC)
+    assert blocked == ["integrity"]
+    assert any("ratchet" in line and "pass_rate" in line for line in lines)
+
+
 def test_integrity_blocks_forged_pass_hat_five():
     from lab9 import gate
 
