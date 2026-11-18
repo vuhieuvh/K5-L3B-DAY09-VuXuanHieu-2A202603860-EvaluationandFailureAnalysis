@@ -104,3 +104,58 @@ def test_ratchet_detects_shifted_slice_definition():
     candidate = copy.deepcopy(original)
     candidate["slices"][0].pop("no_significant_drop")
     assert gate.integrity_check(base, base, candidate, original)
+
+
+def test_renaming_eval_set_without_changing_data_does_not_reset_ratchet():
+    from lab9 import gate
+
+    base = _report(copy.deepcopy(ROWS), {"pass_rate": 1.0})
+    base["manifest"]["labels_sha"] = "same-labels"
+    candidate = copy.deepcopy(base)
+    candidate["rows"][0]["pass_rate"] = False
+    candidate["rows"][1]["pass_rate"] = False
+    candidate["metrics"]["pass_rate"] = 0.75
+    renamed = copy.deepcopy(SPEC)
+    renamed["eval_set_version"] = "v3"
+    assert gate.check(candidate, base, renamed, SPEC)[0] == ["pass_rate"]
+
+    renamed["metrics"][0]["threshold"]["min"] = 0.7
+    blocked, lines = gate.check(candidate, base, renamed, SPEC)
+    assert blocked == ["integrity"]
+    assert any("ratchet" in line and "pass_rate" in line for line in lines)
+
+
+def test_integrity_blocks_forged_pass_hat_five():
+    from lab9 import gate
+
+    seeds = (11, 22, 33, 44, 55)
+    rows = [{"item_id": f"E-{i:03d}", "seed": seed, "pass_rate": True}
+            for i in range(4) for seed in seeds]
+    base = _report(rows, {"pass_rate": 1.0, "pass_hat_5": 1.0}, seeds=seeds)
+    candidate = copy.deepcopy(base)
+    candidate["rows"][0]["pass_rate"] = False
+    candidate["metrics"] = {"pass_rate": 0.95, "pass_hat_5": 0.75}
+    spec = dict(SPEC, metrics=[*SPEC["metrics"],
+                               {"id": "pass_hat_5", "blocking": True, "threshold": {"min": 0.8}}])
+    assert gate.check(candidate, base, spec)[0] == ["pass_hat_5"]
+
+    candidate["metrics"]["pass_hat_5"] = 1.0
+    assert gate.check(candidate, base, spec)[0] == ["integrity"]
+
+
+@pytest.mark.parametrize("invalid", [".nan", ".inf", "-.inf", "true", "'0.8'"])
+def test_integrity_rejects_invalid_metric_and_slice_limits(invalid):
+    import yaml
+
+    from lab9 import gate
+
+    base = _report(copy.deepcopy(ROWS), {"pass_rate": 1.0})
+    original = dict(SPEC, slices=[{"name": "denial", "metric": "pass_rate", "min": 0.9,
+                                   "blocking": True}])
+    for target in ("metric", "slice"):
+        candidate = copy.deepcopy(original)
+        entry = candidate["metrics"][0]["threshold"] if target == "metric" else candidate["slices"][0]
+        entry["min"] = yaml.safe_load(invalid)
+        blocked, lines = gate.check(base, base, candidate, base_spec=original)
+        assert blocked == ["integrity"]
+        assert any(target in line and "min" in line for line in lines)

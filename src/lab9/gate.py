@@ -4,7 +4,7 @@
 
 exit 0 = merge, exit 1 = blocked. Safety metrics: max 0, no averaging away.
 Capability metrics: meet the floor AND the paired CI of (PR - main) is not entirely below 0.
-Thresholds may only get stricter on the same eval-set version (ratchet).
+Thresholds may only get stricter on the same eval-set version or data (ratchet).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from statistics import mean
 
 from lab8.console import utf8_stdio
 from lab9 import stats
-from lab9.eval import SPEC, load_spec, per_item
+from lab9.eval import SPEC, load_spec, per_item, stability_metrics
 from lab9.graders import GRADERS
 
 
@@ -28,18 +28,33 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
     (empty = trustworthy). A gate that passes a broken report is worse than no gate.
     Must catch at least:
       - any metric value in pr["metrics"] that is NaN or inf
+      - any gate threshold that is not a finite number
+      - a reported stability metric that disagrees with the per-item trial grades
       - len(pr["rows"]) != manifest items x len(manifest seeds)   (dropped / duplicated rows)
       - the (item_id, seed) set of PR differs from the baseline's (cherry-picked seeds/items)
       - pr["evaluator_failures"] non-empty, or a row whose value for a graded spec metric is
         None (a crashed grader silently scores as "missing" and drops out of the mean)
       - base_spec given and a threshold in spec is LOOSER than in base_spec for the same
-        eval-set version (ratchet: max may not rise, min may not fall, a blocking metric may
+        eval-set version or data (ratchet: max may not rise, min may not fall, a blocking metric may
         not become non-blocking, a metric may not disappear; the same for spec["slices"],
         including dropping no_significant_drop)
       - an item's slice tags in PR rows differ from the baseline's (relabelling an item out of a
         slice hides its regression from the slice gate)"""
-    problems = []
+    problems = _invalid_limits(spec, "PR spec")
+    if base_spec is not None:
+        problems.extend(_invalid_limits(base_spec, "baseline spec"))
+    if problems:
+        return problems
     required = {m["id"] for m in spec["metrics"] if m["id"] in GRADERS or m.get("grader") == "code"}
+    declared = {m["id"] for m in spec["metrics"]}
+    k_values = set(spec.get("pass_k", []))
+    stability_ids = declared & {"pass_5"}
+    stability_ids.update(f"{prefix}_{k}" for prefix in ("pass_at", "pass_hat") for k in k_values)
+    for metric in declared:
+        prefix, _, k = metric.rpartition("_")
+        if prefix in {"pass_at", "pass_hat"} and k.isascii() and k.isdecimal() and int(k) > 0:
+            k_values.add(int(k))
+            stability_ids.add(f"{prefix}_{int(k)}")
     tags_by_report = {}
     for name, report in (("PR", pr), ("baseline", base)):
         manifest, rows = report["manifest"], report["rows"]
@@ -69,6 +84,15 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
             value = report["metrics"].get(metric)
             if not isinstance(value, Real) or not math.isclose(value, expected, abs_tol=0.00005):
                 problems.append(f"{name} metric {metric} disagrees with its row grades")
+        if stability_ids and rows:
+            if any(type(row.get("pass_rate")) is not bool for row in rows):
+                problems.append(f"{name} stability metrics need a valid pass_rate grade for every row")
+            else:
+                recomputed = stability_metrics(rows, sorted(k_values))
+                for metric in sorted(stability_ids):
+                    value = report["metrics"].get(metric)
+                    if isinstance(value, bool) or value != recomputed[metric]:
+                        problems.append(f"{name} metric {metric} disagrees with its row grades")
         tags_by_report[name] = {pair: frozenset(row.get("slices") or ())
                                 for pair, row in zip(pairs, rows, strict=True)}
     pr_tags, base_tags = tags_by_report["PR"], tags_by_report["baseline"]
@@ -76,10 +100,30 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
         problems.append("PR item × seed pairs differ from baseline")
     elif pr_tags != base_tags:
         problems.append("PR slice tags differ from baseline")
-    if pr["manifest"].get("labels_sha") != base["manifest"].get("labels_sha"):
+    same_labels = pr["manifest"].get("labels_sha") == base["manifest"].get("labels_sha")
+    if not same_labels:
         problems.append("PR labels SHA differs from baseline")
-    if base_spec is not None and spec.get("eval_set_version") == base_spec.get("eval_set_version"):
-        problems.extend(_ratchet(spec, base_spec))
+    if base_spec is not None:
+        same_version = spec.get("eval_set_version") == base_spec.get("eval_set_version")
+        same_items = pr["manifest"]["eval_set_sha"] == base["manifest"]["eval_set_sha"]
+        if same_version or (same_items and same_labels):
+            problems.extend(_ratchet(spec, base_spec))
+    return problems
+
+
+def _invalid_limits(spec: dict, source: str) -> list[str]:
+    problems = []
+    entries = [(f"metric {m['id']}", m.get("threshold", {})) for m in spec["metrics"]]
+    entries.extend((f"slice {s['name']}/{s['metric']}", s) for s in spec.get("slices", []))
+    for name, limits in entries:
+        if not isinstance(limits, dict):
+            problems.append(f"{source} {name} thresholds must be a mapping")
+            continue
+        for key in ("min", "max", "max_increase"):
+            if key in limits:
+                value = limits[key]
+                if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+                    problems.append(f"{source} {name} threshold {key} must be a finite number")
     return problems
 
 
