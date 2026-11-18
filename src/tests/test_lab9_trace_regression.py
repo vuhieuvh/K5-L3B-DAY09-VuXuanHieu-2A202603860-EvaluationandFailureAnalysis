@@ -11,6 +11,14 @@ from pydantic_evals.evaluators import EvaluatorContext
 pytestmark = pytest.mark.student
 
 
+@pytest.fixture(autouse=True)
+def preserve_shape_registry():
+    original = SHAPES.copy()
+    yield
+    SHAPES.clear()
+    SHAPES.update(original)
+
+
 def context(shape, claim, seed):
     case = investigate(shape, claim, seed)
     return EvaluatorContext(
