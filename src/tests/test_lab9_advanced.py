@@ -74,3 +74,33 @@ def test_slice_check_blocks_a_slice_below_floor():
     spec = dict(SPEC, slices=[{"name": "denial", "metric": "pass_rate", "min": 0.9, "blocking": True}])
     blocked, _ = gate.slice_check(_report(rows, {"pass_rate": 0.75}), base, spec)
     assert blocked == ["slice:denial/pass_rate"]
+
+
+@pytest.mark.parametrize("tamper", ["duplicate", "grader_failure", "missing_grade", "slice_tag", "aggregate"])
+def test_integrity_rejects_a_green_report_with_untrustworthy_evidence(tamper):
+    from lab9 import gate
+
+    base = _report(copy.deepcopy(ROWS), {"pass_rate": 1.0})
+    candidate = copy.deepcopy(base)
+    if tamper == "duplicate":
+        candidate["rows"][0] = copy.deepcopy(candidate["rows"][1])
+    elif tamper == "grader_failure":
+        candidate["evaluator_failures"] = ["a failed evaluator"]
+    elif tamper == "missing_grade":
+        candidate["rows"][0].pop("pass_rate")
+    elif tamper == "slice_tag":
+        candidate["rows"][0]["slices"].clear()
+    else:
+        candidate["rows"][0]["pass_rate"] = False
+    assert gate.integrity_check(candidate, base, SPEC)
+
+
+def test_ratchet_detects_shifted_slice_definition():
+    from lab9 import gate
+
+    base = _report(copy.deepcopy(ROWS), {"pass_rate": 1.0})
+    original = dict(SPEC, slices=[{"name": "denial", "metric": "pass_rate", "min": 0.9,
+                                   "no_significant_drop": True, "blocking": True}])
+    candidate = copy.deepcopy(original)
+    candidate["slices"][0].pop("no_significant_drop")
+    assert gate.integrity_check(base, base, candidate, original)
