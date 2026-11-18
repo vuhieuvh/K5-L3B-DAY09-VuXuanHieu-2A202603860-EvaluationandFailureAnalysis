@@ -122,3 +122,21 @@ def test_integrity_blocks_forged_pass_hat_five():
 
     candidate["metrics"]["pass_hat_5"] = 1.0
     assert gate.check(candidate, base, spec)[0] == ["integrity"]
+
+
+@pytest.mark.parametrize("invalid", [".nan", ".inf", "-.inf", "true", "'0.8'"])
+def test_integrity_rejects_invalid_metric_and_slice_limits(invalid):
+    import yaml
+
+    from lab9 import gate
+
+    base = _report(copy.deepcopy(ROWS), {"pass_rate": 1.0})
+    original = dict(SPEC, slices=[{"name": "denial", "metric": "pass_rate", "min": 0.9,
+                                   "blocking": True}])
+    for target in ("metric", "slice"):
+        candidate = copy.deepcopy(original)
+        entry = candidate["metrics"][0]["threshold"] if target == "metric" else candidate["slices"][0]
+        entry["min"] = yaml.safe_load(invalid)
+        blocked, lines = gate.check(base, base, candidate, base_spec=original)
+        assert blocked == ["integrity"]
+        assert any(target in line and "min" in line for line in lines)

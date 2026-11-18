@@ -28,6 +28,7 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
     (empty = trustworthy). A gate that passes a broken report is worse than no gate.
     Must catch at least:
       - any metric value in pr["metrics"] that is NaN or inf
+      - any gate threshold that is not a finite number
       - a reported stability metric that disagrees with the per-item trial grades
       - len(pr["rows"]) != manifest items x len(manifest seeds)   (dropped / duplicated rows)
       - the (item_id, seed) set of PR differs from the baseline's (cherry-picked seeds/items)
@@ -39,7 +40,11 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
         including dropping no_significant_drop)
       - an item's slice tags in PR rows differ from the baseline's (relabelling an item out of a
         slice hides its regression from the slice gate)"""
-    problems = []
+    problems = _invalid_limits(spec, "PR spec")
+    if base_spec is not None:
+        problems.extend(_invalid_limits(base_spec, "baseline spec"))
+    if problems:
+        return problems
     required = {m["id"] for m in spec["metrics"] if m["id"] in GRADERS or m.get("grader") == "code"}
     declared = {m["id"] for m in spec["metrics"]}
     k_values = set(spec.get("pass_k", []))
@@ -99,6 +104,22 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
         problems.append("PR labels SHA differs from baseline")
     if base_spec is not None and spec.get("eval_set_version") == base_spec.get("eval_set_version"):
         problems.extend(_ratchet(spec, base_spec))
+    return problems
+
+
+def _invalid_limits(spec: dict, source: str) -> list[str]:
+    problems = []
+    entries = [(f"metric {m['id']}", m.get("threshold", {})) for m in spec["metrics"]]
+    entries.extend((f"slice {s['name']}/{s['metric']}", s) for s in spec.get("slices", []))
+    for name, limits in entries:
+        if not isinstance(limits, dict):
+            problems.append(f"{source} {name} thresholds must be a mapping")
+            continue
+        for key in ("min", "max", "max_increase"):
+            if key in limits:
+                value = limits[key]
+                if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+                    problems.append(f"{source} {name} threshold {key} must be a finite number")
     return problems
 
 
