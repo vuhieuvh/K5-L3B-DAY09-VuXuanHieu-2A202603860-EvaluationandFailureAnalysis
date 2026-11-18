@@ -41,6 +41,15 @@ python -m lab9.traps --pr reports/eval_slice_regression.json --baseline reports/
 | `cherry_picked_seeds` | exit 1 — blocked: integrity · tập trial khác baseline |
 | `loosened_spec` | exit 1 — blocked: integrity · ratchet phát hiện hạ ngưỡng và xóa slice |
 
+## Đối chứng bổ sung
+
+Cả hai replay dùng eval set v2, năm seed chuẩn và factory `make_shape` của đề với `no_override` cộng một công tắc lỗi. Các kiểm tra này dùng công tắc public.
+
+| Biến thể | Kết quả đo | Verdict |
+|---|---|---|
+| [`quiet_override`](../src/reports/eval_replay_quiet_override.json) | `refund_amount_correct=0.8929`, `denial/pass_rate=0.7273` | Hai metric chặn dù biến thể bỏ event `model_override`. |
+| [`misreport`](../src/reports/eval_replay_misreport.json) | `reply_ledger_correct=0.7857` | Chỉ metric FM-08 chặn. |
+
 ## Bonus
 
 Inspect AI và pydantic-evals khớp 7/7 trial trên từng grader trong ba grader. Tệp [inspect_comparison.json](../src/reports/inspect_comparison.json) ghi phiên bản, danh sách trial và số lượng verdict lỗi.
