@@ -19,7 +19,7 @@ from statistics import mean
 
 from lab8.console import utf8_stdio
 from lab9 import stats
-from lab9.eval import SPEC, load_spec, per_item
+from lab9.eval import SPEC, load_spec, per_item, stability_metrics
 from lab9.graders import GRADERS
 
 
@@ -28,6 +28,7 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
     (empty = trustworthy). A gate that passes a broken report is worse than no gate.
     Must catch at least:
       - any metric value in pr["metrics"] that is NaN or inf
+      - a reported stability metric that disagrees with the per-item trial grades
       - len(pr["rows"]) != manifest items x len(manifest seeds)   (dropped / duplicated rows)
       - the (item_id, seed) set of PR differs from the baseline's (cherry-picked seeds/items)
       - pr["evaluator_failures"] non-empty, or a row whose value for a graded spec metric is
@@ -40,6 +41,15 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
         slice hides its regression from the slice gate)"""
     problems = []
     required = {m["id"] for m in spec["metrics"] if m["id"] in GRADERS or m.get("grader") == "code"}
+    declared = {m["id"] for m in spec["metrics"]}
+    k_values = set(spec.get("pass_k", []))
+    stability_ids = declared & {"pass_5"}
+    stability_ids.update(f"{prefix}_{k}" for prefix in ("pass_at", "pass_hat") for k in k_values)
+    for metric in declared:
+        prefix, _, k = metric.rpartition("_")
+        if prefix in {"pass_at", "pass_hat"} and k.isascii() and k.isdecimal() and int(k) > 0:
+            k_values.add(int(k))
+            stability_ids.add(f"{prefix}_{int(k)}")
     tags_by_report = {}
     for name, report in (("PR", pr), ("baseline", base)):
         manifest, rows = report["manifest"], report["rows"]
@@ -69,6 +79,15 @@ def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = N
             value = report["metrics"].get(metric)
             if not isinstance(value, Real) or not math.isclose(value, expected, abs_tol=0.00005):
                 problems.append(f"{name} metric {metric} disagrees with its row grades")
+        if stability_ids and rows:
+            if any(type(row.get("pass_rate")) is not bool for row in rows):
+                problems.append(f"{name} stability metrics need a valid pass_rate grade for every row")
+            else:
+                recomputed = stability_metrics(rows, sorted(k_values))
+                for metric in sorted(stability_ids):
+                    value = report["metrics"].get(metric)
+                    if isinstance(value, bool) or value != recomputed[metric]:
+                        problems.append(f"{name} metric {metric} disagrees with its row grades")
         tags_by_report[name] = {pair: frozenset(row.get("slices") or ())
                                 for pair, row in zip(pairs, rows, strict=True)}
     pr_tags, base_tags = tags_by_report["PR"], tags_by_report["baseline"]

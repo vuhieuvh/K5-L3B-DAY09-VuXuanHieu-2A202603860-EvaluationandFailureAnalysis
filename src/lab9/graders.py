@@ -63,8 +63,13 @@ class RefundAmountCorrect(Evaluator[Any, Trial]):
         return EvaluationReason(value=actual == expected, reason=f"ledger={actual}, label={expected}")
 
 
-_VND_AMOUNT = re.compile(
-    r"(?<![\d.,])([0-9]{1,3}(?:[., \u00a0\u202f][0-9]{3})+|[0-9]+)\s*(?:VNĐ|VND|đồng|đ|₫)(?!\w)",
+_COMPLETED_REFUND_AMOUNT = re.compile(
+    r"\bđã\s+(?:được\s+)?hoàn"
+    r"(?:\s+(?:lại|trả))?"
+    r"(?:\s+(?:tiền|phí(?:\s+(?:giao hàng|vận chuyển|ship))?))?"
+    r"(?:\s+(?:là|số tiền))?\s*:?\s*"
+    r"(?P<amount>[+−-]?(?:[0-9]{1,3}(?:[., \u00a0\u202f][0-9]{3})+|[0-9]+))"
+    r"\s*(?:VNĐ|VND|đồng|đ|₫)(?!\w)",
     re.IGNORECASE,
 )
 
@@ -87,8 +92,8 @@ class ReplyLedgerCorrect(Evaluator[Any, Trial]):
             for reply in replies:
                 if not isinstance(reply, str) or not reply.strip():
                     return EvaluationReason(value=False, reason="invalid reply event")
-                amounts.extend(int(re.sub(r"[^0-9]", "", match.group(1)))
-                               for match in _VND_AMOUNT.finditer(reply))
+                amounts.extend(int(re.sub(r"[.,\s]", "", match["amount"]).replace("−", "-"))
+                               for match in _COMPLETED_REFUND_AMOUNT.finditer(reply))
             if not amounts and trial["result"].get("status") != "resolved" and ledger == 0:
                 return EvaluationReason(value=True, reason="no refund confirmed and no ledger refund")
         return EvaluationReason(value=bool(amounts) and all(amount == ledger for amount in amounts),

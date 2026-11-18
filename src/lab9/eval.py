@@ -17,6 +17,7 @@ import json
 import platform
 import tempfile
 import time
+from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -114,7 +115,7 @@ def run_eval(shape: str, spec: dict[str, Any], seeds: list[int] | None = None) -
             "metrics": aggregate(rows, metric_ids, k_values=spec.get("pass_k", []))}
 
 
-def aggregate(rows: list[dict[str, Any]], metric_ids: list[str], k_values: list[int] = ()) -> dict[str, Any]:
+def aggregate(rows: list[dict[str, Any]], metric_ids: list[str], k_values: Iterable[int] = ()) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for m in metric_ids:
         vals = [r[m] for r in rows if r[m] is not None]
@@ -122,24 +123,27 @@ def aggregate(rows: list[dict[str, Any]], metric_ids: list[str], k_values: list[
             out[m] = sum(vals)                       # safety: a count, must be 0
         else:
             out[m] = round(sum(vals) / len(vals), 4) if vals else None
-    by_item: dict[str, list[bool]] = {}
-    for r in rows:
-        by_item.setdefault(r["item_id"], []).append(bool(r.get("pass_rate")))
-    out["pass_5"] = round(sum(all(v) for v in by_item.values()) / len(by_item), 4) if by_item else None
-    # pass@k / pass^k (M6): mean over items of the unbiased per-item estimate.
-    # Left as None until stats.pass_at_k / stats.pass_hat_k are implemented.
-    for k in k_values:
-        for name, fn in (("pass_at", stats.pass_at_k), ("pass_hat", stats.pass_hat_k)):
-            if not by_item or min(len(v) for v in by_item.values()) < k:
-                out[f"{name}_{k}"] = None            # undefined with fewer than k runs per item
-                continue
-            try:
-                est = [fn(len(v), sum(v), k) for v in by_item.values()]
-                out[f"{name}_{k}"] = round(sum(est) / len(est), 4) if est else None
-            except NotImplementedError:
-                out[f"{name}_{k}"] = None
+    out.update(stability_metrics(rows, k_values))
     passes = sum(bool(r.get("pass_rate")) for r in rows)
     out["cost_per_success"] = round(sum(r["cost"] for r in rows) / passes, 4) if passes else None
+    return out
+
+
+def stability_metrics(rows: list[dict[str, Any]], k_values: Iterable[int]) -> dict[str, float | None]:
+    """Compute multi-trial metrics from the recorded trials for each item."""
+    by_item: dict[str, list[bool]] = {}
+    for row in rows:
+        by_item.setdefault(row["item_id"], []).append(bool(row.get("pass_rate")))
+    per_item_counts = [(len(values), sum(values)) for values in by_item.values()]
+    out = {"pass_5": round(sum(n == c for n, c in per_item_counts) / len(by_item), 4) if by_item else None}
+    min_trials = min((n for n, _ in per_item_counts), default=0)
+    # pass@k / pass^k (M6): mean over items of the unbiased per-item estimate.
+    for k in k_values:
+        for name, fn in (("pass_at", stats.pass_at_k), ("pass_hat", stats.pass_hat_k)):
+            if min_trials < k:
+                out[f"{name}_{k}"] = None            # undefined with fewer than k runs per item
+                continue
+            out[f"{name}_{k}"] = round(sum(fn(n, c, k) for n, c in per_item_counts) / len(by_item), 4)
     return out
 
 

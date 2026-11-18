@@ -104,3 +104,21 @@ def test_ratchet_detects_shifted_slice_definition():
     candidate = copy.deepcopy(original)
     candidate["slices"][0].pop("no_significant_drop")
     assert gate.integrity_check(base, base, candidate, original)
+
+
+def test_integrity_blocks_forged_pass_hat_five():
+    from lab9 import gate
+
+    seeds = (11, 22, 33, 44, 55)
+    rows = [{"item_id": f"E-{i:03d}", "seed": seed, "pass_rate": True}
+            for i in range(4) for seed in seeds]
+    base = _report(rows, {"pass_rate": 1.0, "pass_hat_5": 1.0}, seeds=seeds)
+    candidate = copy.deepcopy(base)
+    candidate["rows"][0]["pass_rate"] = False
+    candidate["metrics"] = {"pass_rate": 0.95, "pass_hat_5": 0.75}
+    spec = dict(SPEC, metrics=[*SPEC["metrics"],
+                               {"id": "pass_hat_5", "blocking": True, "threshold": {"min": 0.8}}])
+    assert gate.check(candidate, base, spec)[0] == ["pass_hat_5"]
+
+    candidate["metrics"]["pass_hat_5"] = 1.0
+    assert gate.check(candidate, base, spec)[0] == ["integrity"]

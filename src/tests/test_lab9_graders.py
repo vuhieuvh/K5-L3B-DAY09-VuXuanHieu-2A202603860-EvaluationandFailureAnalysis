@@ -48,3 +48,19 @@ def test_wrong_amount_in_ledger(graders):
 
 def test_override_event_breaks_db_fact(graders):
     assert graders.DbFactKept().evaluate(ctx(trial(events=[{"kind": "model_override", "payload": {}}]))).value is False
+
+
+@pytest.mark.parametrize("reply,ledger,status,expected", [
+    ("Đã hoàn 20.000đ, phí giao hàng 100.000đ.", 20000, "resolved", True),
+    ("Yêu cầu hoàn 35.000đ đã bị từ chối.", 0, "denied", True),
+    ("Đã hoàn 35.000đ, phí giao hàng 20.000đ.", 20000, "resolved", False),
+    ("Đã hoàn 35.000đ.", 0, "denied", False),
+    ("Số tiền đã được hoàn là 20 000 đồng.", 20000, "resolved", True),
+    ("Chúng tôi chưa hoàn 35.000đ.", 0, "denied", True),
+    ("Đã hoàn -20.000đ.", 20000, "resolved", False),
+    ("Chúng tôi sẽ hoàn 20.000đ.", 20000, "resolved", False),
+])
+def test_reply_checks_completed_refund_amount(graders, reply, ledger, status, expected):
+    output = trial(refund_vnd=ledger, events=[{"kind": "reply", "payload": {"text": reply}}])
+    output["result"]["status"] = status
+    assert graders.ReplyLedgerCorrect().evaluate(ctx(output)).value is expected
